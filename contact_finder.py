@@ -104,7 +104,7 @@ def surfe_search(domain: str, country: str = None,
     key = _next_key()
     with _lock:
         _call_counter[0] += 1
-        time.sleep(0.3)   # ~3 req/s per worker, well under 10/s limit
+    time.sleep(0.3)   # outside lock: throttle without blocking other workers
 
     for attempt in range(retries):
         try:
@@ -349,9 +349,9 @@ def run_batch(start: int = 0, limit: int = 300,
     xlsx = "/home/user/AwinContacts/Awin_Contacts.xlsx"
     out  = f"/home/user/AwinContacts/Awin_Contacts_{output_suffix}.xlsx"
 
-    print(f"Loading companies (offset={start}, limit={limit})…")
+    print(f"Loading companies (offset={start}, limit={limit})…", flush=True)
     companies = load_companies(xlsx, start=start, limit=limit)
-    print(f"  → {len(companies)} companies to process\n")
+    print(f"  → {len(companies)} companies to process\n", flush=True)
 
     results     = []
     hits        = 0
@@ -367,10 +367,12 @@ def run_batch(start: int = 0, limit: int = 300,
             if found:
                 print(f"  [{done[0]:>3}/{len(companies)}] HIT  "
                       f"{result['name'][:40]:<40} "
-                      f"({_call_counter[0] - calls_start} calls so far)")
+                      f"({_call_counter[0] - calls_start} calls so far)",
+                      flush=True)
             elif done[0] % 25 == 0:
                 print(f"  [{done[0]:>3}/{len(companies)}] "
-                      f"— {_call_counter[0] - calls_start} calls so far")
+                      f"— {_call_counter[0] - calls_start} calls so far",
+                      flush=True)
         return result
 
     with ThreadPoolExecutor(max_workers=2) as ex:   # 2 worker = max ~4 req/s, safe sotto quota
