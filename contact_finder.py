@@ -14,9 +14,10 @@ import threading
 
 # ── API keys (round-robin) ───────────────────────────────────────────────────
 API_KEYS = [
-    "TL1fKLZMEE7rdWEKaIe_W-vmUvxkyP0fecMTLsbFJKA",
-    "rMY_QurAxUvl6jDeeM9xN01q5IMFBfrH5AUJJLdafe4",
-    "KwGtwE1QeCfHU1G3NjkMyGFqf2PT36NEC5taWt0iFgY",
+    # Keys 1-3 restored at midnight when daily quota resets
+    # "TL1fKLZMEE7rdWEKaIe_W-vmUvxkyP0fecMTLsbFJKA",
+    # "rMY_QurAxUvl6jDeeM9xN01q5IMFBfrH5AUJJLdafe4",
+    # "KwGtwE1QeCfHU1G3NjkMyGFqf2PT36NEC5taWt0iFgY",
     "xjs0s_35PkhFgU8L4Z1SU-m_urZsZd55nqFX8xp2noA",
     "FtZWylT6Cfe2S3f9UbV528opGBjsJ0fSYEHMzajXebE",
 ]
