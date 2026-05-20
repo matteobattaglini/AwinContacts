@@ -17,7 +17,6 @@ API_KEYS = [
     "TL1fKLZMEE7rdWEKaIe_W-vmUvxkyP0fecMTLsbFJKA",
     "rMY_QurAxUvl6jDeeM9xN01q5IMFBfrH5AUJJLdafe4",
     "KwGtwE1QeCfHU1G3NjkMyGFqf2PT36NEC5taWt0iFgY",
-    "nIWDw-0XW6IiO7jiQZ_ktCRiyJ-KdgMf0-GWZGys9U",
     "xjs0s_35PkhFgU8L4Z1SU-m_urZsZd55nqFX8xp2noA",
 ]
 SURFE_URL = "https://api.surfe.com/v2/people/search"
