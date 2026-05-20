@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """
 Surfe Contact Finder for Awin Advertisers
-Finds Affiliate/Digital Marketing contacts for each company.
+Finds Affiliate / Digital Marketing contacts for each company.
 """
 
 import requests
-import json
 import time
 import itertools
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
-import re
 
-# ── API keys ────────────────────────────────────────────────────────────────
+# ── API keys (round-robin) ───────────────────────────────────────────────────
 API_KEYS = [
     "TL1fKLZMEE7rdWEKaIe_W-vmUvxkyP0fecMTLsbFJKA",
     "rMY_QurAxUvl6jDeeM9xN01q5IMFBfrH5AUJJLdafe4",
@@ -23,14 +20,14 @@ API_KEYS = [
 ]
 SURFE_URL = "https://api.surfe.com/v2/people/search"
 
-# ── Job title priorities ─────────────────────────────────────────────────────
+# ── Job title search terms (Surfe expands semantically) ─────────────────────
 JOB_TITLES = [
     "Affiliate Marketing",
     "Digital Marketing",
     "Performance Marketing",
 ]
 
-# Keywords to rank results client-side (order = priority)
+# Client-side priority ranking (lower index = higher priority)
 PRIORITY_KEYWORDS = [
     "affiliate",
     "digital marketing",
@@ -39,7 +36,7 @@ PRIORITY_KEYWORDS = [
     "marketing",
 ]
 
-# ── Country TLD → ISO code ───────────────────────────────────────────────────
+# ── Country TLD → ISO-2 code ─────────────────────────────────────────────────
 TLD_COUNTRY = {
     "it": "it", "de": "de", "fr": "fr", "es": "es",
     "nl": "nl", "pl": "pl", "pt": "pt", "be": "be",
@@ -50,68 +47,57 @@ TLD_COUNTRY = {
     "jp": "ja", "in": "in", "mx": "mx",
 }
 
-lock = threading.Lock()
-call_counter = [0]
-# Round-robin key distributor
-key_cycle = itertools.cycle(API_KEYS)
-key_lock = threading.Lock()
+# ── Thread-safe state ────────────────────────────────────────────────────────
+_lock = threading.Lock()
+_call_counter = [0]
+_key_cycle = itertools.cycle(API_KEYS)
+_key_lock = threading.Lock()
 
 
-def next_key():
-    with key_lock:
-        return next(key_cycle)
+def _next_key() -> str:
+    with _key_lock:
+        return next(_key_cycle)
 
+
+# ── Domain helpers ───────────────────────────────────────────────────────────
 
 def parse_domain(domain: str):
     """
-    Returns (original, com_fallback, country_code).
-    country_code is None for generic TLDs (.com, .net, .eu, .org).
+    Returns (original, com_fallback, has_country_tld).
+    com_fallback is the base-.com version for country TLDs.
     """
-    domain = domain.lower().strip().lstrip("www.")
+    domain = domain.lower().strip().removeprefix("www.")
 
-    # Handle .co.uk
     if domain.endswith(".co.uk"):
-        base = domain[: -len(".co.uk")].split(".")[-1]
-        return domain, f"{base}.com", "gb"
+        base = domain[:-len(".co.uk")].split(".")[-1]
+        return domain, f"{base}.com", True
 
     parts = domain.split(".")
     tld = parts[-1]
 
     if tld in TLD_COUNTRY:
-        country = TLD_COUNTRY[tld]
-        # Base = second-to-last part (handles subdomains like conti.credit-agricole.it)
-        base = parts[-2]
-        com_fallback = f"{base}.com"
-        return domain, com_fallback, country
+        base = parts[-2]          # e.g. "adidas" from "adidas.it"
+        return domain, f"{base}.com", True
 
     if tld == "com" and len(parts) > 2:
-        # Subdomain: offer.alibaba.com → alibaba.com
-        root = ".".join(parts[-2:])
-        return domain, root, None
+        # Subdomain like offer.alibaba.com → alibaba.com
+        return domain, ".".join(parts[-2:]), False
 
-    return domain, domain, None
+    return domain, domain, False
 
 
-def title_priority(job_title: str) -> int:
-    """Lower = higher priority."""
-    jt = job_title.lower()
-    for i, kw in enumerate(PRIORITY_KEYWORDS):
-        if kw in jt:
-            return i
-    return len(PRIORITY_KEYWORDS)
-
+# ── Surfe search ─────────────────────────────────────────────────────────────
 
 def surfe_search(domain: str, limit: int = 10, retries: int = 3) -> list:
-    """Single Surfe API call. Returns list of person dicts."""
+    """Call Surfe API and return list of people dicts. Thread-safe."""
     payload = {
         "limit": limit,
         "people": {"jobTitles": JOB_TITLES},
         "companies": {"domains": [domain]},
     }
-
-    key = next_key()
-    with lock:
-        call_counter[0] += 1
+    key = _next_key()
+    with _lock:
+        _call_counter[0] += 1
 
     for attempt in range(retries):
         try:
@@ -122,169 +108,242 @@ def surfe_search(domain: str, limit: int = 10, retries: int = 3) -> list:
                 timeout=20,
             )
             if r.status_code == 429:
-                wait = 2 ** attempt
-                time.sleep(wait)
+                time.sleep(2 ** attempt)
                 continue
-            if r.status_code != 200:
-                return []
-            return r.json().get("people", [])
+            if r.status_code == 200:
+                return r.json().get("people", [])
+            return []
         except Exception:
             time.sleep(1)
     return []
 
 
+def title_priority(job_title: str) -> int:
+    jt = job_title.lower()
+    for i, kw in enumerate(PRIORITY_KEYWORDS):
+        if kw in jt:
+            return i
+    return len(PRIORITY_KEYWORDS)
+
+
 def find_contacts(company: dict) -> dict:
     """
-    Find up to 2 prioritised contacts for a company.
+    Search Surfe for up to 2 contacts.
     Strategy:
-      1. Search with original domain
-      2. If 0 results and domain has country TLD → try .com (no country filter,
-         since affiliate teams are often global even for local brands)
+      1. Try original domain (any TLD).
+      2. If 0 results and domain has a country TLD (.it, .de, …):
+         retry with base.com — NO country filter, since affiliate teams
+         are often global even for country-specific Awin programs.
+    Only 1–2 API calls per company (efficient credit use).
     """
     domain = company["domain"]
-    original, com_fallback, country = parse_domain(domain)
+    original, com_fallback, has_country_tld = parse_domain(domain)
 
     people = surfe_search(original)
 
     used_fallback = False
-    if not people and country and com_fallback != original:
-        people = surfe_search(com_fallback)   # no country filter
+    if not people and has_country_tld and com_fallback != original:
+        people = surfe_search(com_fallback)
         used_fallback = True
 
-    # Sort by priority
     people.sort(key=lambda p: title_priority(p.get("jobTitle", "")))
 
     contacts = []
     for p in people[:2]:
+        # companyDomain from Surfe = the actual domain for RocketReach email lookup
+        surfe_domain = p.get("companyDomain", "")
+        rocketreach_domain = surfe_domain if surfe_domain else (
+            com_fallback if used_fallback else original
+        )
         contacts.append({
-            "first_name": p.get("firstName", ""),
-            "last_name": p.get("lastName", ""),
-            "linkedin": p.get("linkedInUrl", ""),
-            "title": p.get("jobTitle", ""),
-            "country": p.get("country", ""),
+            "first_name":        p.get("firstName", ""),
+            "last_name":         p.get("lastName", ""),
+            "linkedin":          p.get("linkedInUrl", ""),
+            "title":             p.get("jobTitle", ""),
+            "person_country":    p.get("country", ""),
+            "rocketreach_domain": rocketreach_domain,
         })
 
     return {
         **company,
-        "contacts": contacts,
-        "used_fallback": used_fallback,
-        "resolved_domain": com_fallback if used_fallback else original,
+        "contacts":       contacts,
+        "used_fallback":  used_fallback,
     }
 
 
-def load_companies(xlsx_path: str, limit: int = None) -> list:
-    """Load unique companies from Excel (2-row pairs)."""
-    wb = openpyxl.load_workbook(xlsx_path)
-    ws = wb.active
-    seen = set()
-    companies = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        name = row[5]
-        domain = row[7]
-        if name and domain and name not in seen:
-            seen.add(name)
-            companies.append({"name": name, "domain": domain})
-        if limit and len(companies) >= limit:
-            break
-    return companies
+# ── Excel helpers ────────────────────────────────────────────────────────────
 
-
-def update_excel(xlsx_path: str, results: list, output_path: str):
-    """Write contacts into the Excel, filling the 2-row slots per company."""
+def load_companies(xlsx_path: str, start: int = 0, limit: int = None) -> list:
+    """
+    Load unique companies from Excel, skipping those already filled
+    (First Name present in row 1 of the pair → manually handled).
+    """
     wb = openpyxl.load_workbook(xlsx_path)
     ws = wb.active
 
-    # Build lookup: company_name → row indices (1-based) of its two rows
-    company_rows = {}
+    # Collect all rows per company (pairs)
+    company_rows: dict[str, list] = {}
     for row_idx in range(2, ws.max_row + 1):
         name = ws.cell(row_idx, 6).value
         if name:
-            if name not in company_rows:
-                company_rows[name] = []
-            company_rows[name].append(row_idx)
+            company_rows.setdefault(name, []).append(row_idx)
 
-    blue = Font(color="0563C1", underline="single", name="Calibri", size=10)
+    companies = []
+    seen = set()
+    for row_idx in range(2, ws.max_row + 1):
+        name = ws.cell(row_idx, 6).value
+        domain = ws.cell(row_idx, 8).value
+        if not name or not domain or name in seen:
+            continue
+        seen.add(name)
+
+        # Skip if first contact row already has a First Name (already processed)
+        rows = company_rows.get(name, [])
+        if rows and ws.cell(rows[0], 1).value:
+            continue
+
+        companies.append({"name": name, "domain": domain})
+
+    # Apply pagination
+    companies = companies[start:]
+    if limit:
+        companies = companies[:limit]
+    return companies
+
+
+def country_to_language(country_code: str) -> str:
+    mapping = {
+        "it": "it",
+        "de": "de", "at": "de", "ch": "de",
+        "fr": "fr", "be": "fr",
+        "es": "es", "mx": "es",
+        "nl": "nl",
+        "pl": "pl",
+        "pt": "pt", "br": "pt",
+        "se": "sv",
+        "dk": "da",
+        "fi": "fi",
+        "no": "no",
+        "ro": "ro",
+        "cz": "cs",
+        "hu": "hu",
+        "gr": "el",
+    }
+    return mapping.get((country_code or "").lower(), "en")
+
+
+def update_excel(xlsx_path: str, results: list, output_path: str):
+    """
+    Fill contact rows in the Excel.
+    - Respects existing manual entries (skips rows with First Name).
+    - Updates Company Domain (col 8) with RocketReach domain when
+      different from original, so email lookup uses the right domain.
+    - Writes person country (col 9) for Brevo language segmentation.
+    """
+    wb = openpyxl.load_workbook(xlsx_path)
+    ws = wb.active
+
+    # Map company name → list of row indices
+    company_rows: dict[str, list] = {}
+    for row_idx in range(2, ws.max_row + 1):
+        name = ws.cell(row_idx, 6).value
+        if name:
+            company_rows.setdefault(name, []).append(row_idx)
+
+    blue   = Font(color="0563C1", underline="single", name="Calibri", size=10)
     normal = Font(name="Calibri", size=10)
 
     for result in results:
-        name = result["name"]
+        name     = result["name"]
         contacts = result["contacts"]
-        rows = company_rows.get(name, [])
+        rows     = company_rows.get(name, [])
 
-        for slot, (row_idx, contact) in enumerate(zip(rows, contacts)):
-            # Skip if row already has a First Name (manually filled)
+        for row_idx, contact in zip(rows, contacts):
+            # Never overwrite a manually filled row
             if ws.cell(row_idx, 1).value:
                 continue
 
             ws.cell(row_idx, 1).value = contact["first_name"]
-            ws.cell(row_idx, 1).font = normal
+            ws.cell(row_idx, 1).font  = normal
             ws.cell(row_idx, 2).value = contact["last_name"]
-            ws.cell(row_idx, 2).font = normal
-            ws.cell(row_idx, 7).value = contact["title"]    # Title column
-            ws.cell(row_idx, 9).value = contact["country"]  # Country column
+            ws.cell(row_idx, 2).font  = normal
+            ws.cell(row_idx, 7).value = contact["title"]
+            ws.cell(row_idx, 9).value = contact["person_country"]
 
-            # LinkedIn as hyperlink
-            linkedin = contact["linkedin"]
-            if linkedin:
-                ws.cell(row_idx, 5).value = linkedin
-                ws.cell(row_idx, 5).font = blue
+            # Update Company Domain with Surfe's actual domain (for RocketReach)
+            rr_domain = contact["rocketreach_domain"]
+            if rr_domain:
+                ws.cell(row_idx, 8).value = rr_domain
+                # Mirror on the paired row (keep both rows consistent)
+                paired = [r for r in rows if r != row_idx]
+                if paired and not ws.cell(paired[0], 1).value:
+                    ws.cell(paired[0], 8).value = rr_domain
+
+            if contact["linkedin"]:
+                ws.cell(row_idx, 5).value = contact["linkedin"]
+                ws.cell(row_idx, 5).font  = blue
 
     wb.save(output_path)
 
 
-def run_test(limit: int = 100):
-    """Test run on first N companies."""
+# ── Batch runner ─────────────────────────────────────────────────────────────
+
+def run_batch(start: int = 0, limit: int = 300,
+              output_suffix: str = "batch1"):
+    """Process a slice of companies and write results to Excel."""
     xlsx = "/home/user/AwinContacts/Awin_Contacts.xlsx"
-    print(f"Loading first {limit} companies from Excel...")
-    companies = load_companies(xlsx, limit=limit)
-    print(f"Loaded {len(companies)} companies\n")
+    out  = f"/home/user/AwinContacts/Awin_Contacts_{output_suffix}.xlsx"
 
-    results = []
-    hits = 0
-    fallbacks = 0
-    calls_start = call_counter[0]
+    print(f"Loading companies (offset={start}, limit={limit})…")
+    companies = load_companies(xlsx, start=start, limit=limit)
+    print(f"  → {len(companies)} companies to process\n")
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {executor.submit(find_contacts, c): c for c in companies}
-        for future in as_completed(futures):
-            result = future.result()
-            results.append(result)
+    results     = []
+    hits        = 0
+    fallbacks   = 0
+    calls_start = _call_counter[0]
+    done        = [0]
+
+    def _process(company):
+        result = find_contacts(company)
+        with _lock:
+            done[0] += 1
             found = len(result["contacts"])
-            if found > 0:
+            if found:
+                print(f"  [{done[0]:>3}/{len(companies)}] HIT  "
+                      f"{result['name'][:40]:<40} "
+                      f"({_call_counter[0] - calls_start} calls so far)")
+            elif done[0] % 25 == 0:
+                print(f"  [{done[0]:>3}/{len(companies)}] "
+                      f"— {_call_counter[0] - calls_start} calls so far")
+        return result
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {ex.submit(_process, c): c for c in companies}
+        for future in as_completed(futures):
+            r = future.result()
+            results.append(r)
+            if r["contacts"]:
                 hits += 1
-            if result["used_fallback"]:
+            if r["used_fallback"]:
                 fallbacks += 1
 
-    calls_used = call_counter[0] - calls_start
+    calls_used = _call_counter[0] - calls_start
     results.sort(key=lambda r: r["name"].lower())
 
-    print(f"\n{'='*65}")
-    print(f"RISULTATI TEST — prime {limit} aziende")
-    print(f"{'='*65}")
-    print(f"Hit (≥1 contatto trovato):  {hits}/{len(companies)} = {hits/len(companies)*100:.0f}%")
-    print(f"Fallback .com usati:        {fallbacks}")
-    print(f"Chiamate API totali:        {calls_used}")
-    print(f"{'='*65}\n")
+    print(f"\n{'='*60}")
+    print(f"BATCH COMPLETATO")
+    print(f"  Aziende processate : {len(companies)}")
+    print(f"  Hit (≥1 contatto)  : {hits} ({hits/len(companies)*100:.0f}%)")
+    print(f"  Fallback .com      : {fallbacks}")
+    print(f"  Chiamate API       : {calls_used}")
+    print(f"{'='*60}\n")
 
-    print(f"{'AZIENDA':<35} {'CONTATTO 1':<30} {'TITOLO':<35} {'FB'}")
-    print("-" * 110)
-    for r in results:
-        c1 = r["contacts"][0] if r["contacts"] else None
-        c2 = r["contacts"][1] if len(r["contacts"]) > 1 else None
-        fb = "↩.com" if r["used_fallback"] else ""
-        if c1:
-            print(f"  {r['name'][:33]:<33} {(c1['first_name']+' '+c1['last_name'])[:28]:<30} {c1['title'][:33]:<35} {fb}")
-            if c2:
-                print(f"  {'':33} {(c2['first_name']+' '+c2['last_name'])[:28]:<30} {c2['title'][:33]:<35}")
-        else:
-            print(f"  {r['name'][:33]:<33} {'—':<30} {'nessun risultato':<35} {fb}")
-
-    # Write to Excel
-    out = "/home/user/AwinContacts/Awin_Contacts_test100.xlsx"
+    print(f"Scrittura Excel → {out}")
     update_excel(xlsx, results, out)
-    print(f"\nFile aggiornato: {out}")
+    print("Fatto.")
     return results
 
 
 if __name__ == "__main__":
-    run_test(limit=100)
+    run_batch(start=0, limit=300, output_suffix="batch1")
