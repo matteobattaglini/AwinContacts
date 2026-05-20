@@ -90,7 +90,7 @@ def parse_domain(domain: str):
 # ── Surfe search ─────────────────────────────────────────────────────────────
 
 def surfe_search(domain: str, country: str = None,
-                 limit: int = 10, retries: int = 3) -> list:
+                 limit: int = 2, retries: int = 3) -> list:
     """Call Surfe API and return list of people dicts. Thread-safe."""
     people_filter: dict = {"jobTitles": JOB_TITLES}
     if country:
