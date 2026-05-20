@@ -156,10 +156,7 @@ def main():
         print(f"  {c['name']:<45} {c['domain']}", flush=True)
     print(flush=True)
 
-    # Step 1: copy v1 → v2 and clear the target rows
-    clear_contacts_in_excel(INPUT_FILE, OUTPUT_FILE, TARGET_COMPANIES)
-
-    # Step 2: fetch contacts
+    # Step 1: fetch contacts first (output file created only after success)
     results     = []
     hits        = 0
     calls_start = _call_counter[0]
@@ -196,7 +193,9 @@ def main():
     print(f"  Chiamate API       : {calls_used}", flush=True)
     print(f"{'='*60}\n", flush=True)
 
+    # Step 2: copy v1 → v2, clear target rows, fill with new contacts
     print(f"Scrittura → {OUTPUT_FILE}", flush=True)
+    clear_contacts_in_excel(INPUT_FILE, OUTPUT_FILE, TARGET_COMPANIES)
     update_excel(OUTPUT_FILE, results, OUTPUT_FILE)
     print("Fatto.", flush=True)
 
