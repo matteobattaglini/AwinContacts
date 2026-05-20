@@ -28,6 +28,10 @@ JOB_TITLES = [
     "Affiliate Marketing",
     "Digital Marketing",
     "Performance Marketing",
+    "Marketing Manager",
+    "Chief Marketing Officer",
+    "Marketing Specialist",
+    "E-commerce Manager",
 ]
 
 # Client-side priority ranking (lower index = higher priority)
@@ -36,7 +40,13 @@ PRIORITY_KEYWORDS = [
     "digital marketing",
     "performance marketing",
     "online marketing",
+    "cmo",
+    "chief marketing",
+    "marketing manager",
+    "marketing specialist",
     "marketing",
+    "ecommerce",
+    "e-commerce",
 ]
 
 # ── Country TLD → ISO-2 code ─────────────────────────────────────────────────
