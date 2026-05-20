@@ -388,7 +388,7 @@ def run_batch(start: int = 0, limit: int = None,
                       flush=True)
         return result
 
-    with ThreadPoolExecutor(max_workers=2) as ex:   # 2 worker = max ~4 req/s, safe sotto quota
+    with ThreadPoolExecutor(max_workers=8) as ex:   # 8 worker: ~8 req in volo, ~0.8 req/s, sotto limite 10 req/s
         futures = {ex.submit(_process, c): c for c in companies}
         for future in as_completed(futures):
             r = future.result()
