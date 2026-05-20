@@ -116,7 +116,7 @@ def surfe_search(domain: str, country: str = None,
     key = _next_key()
     with _lock:
         _call_counter[0] += 1
-    time.sleep(0.3)   # outside lock: throttle without blocking other workers
+    time.sleep(0.05)  # minimal stagger to avoid simultaneous burst start
 
     for attempt in range(retries):
         try:
@@ -388,7 +388,7 @@ def run_batch(start: int = 0, limit: int = None,
                       flush=True)
         return result
 
-    with ThreadPoolExecutor(max_workers=8) as ex:   # 8 worker: ~8 req in volo, ~0.8 req/s, sotto limite 10 req/s
+    with ThreadPoolExecutor(max_workers=20) as ex:  # 20 worker = burst max Surfe, ~2 req/s, limite 10 req/s
         futures = {ex.submit(_process, c): c for c in companies}
         for future in as_completed(futures):
             r = future.result()
