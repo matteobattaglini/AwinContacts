@@ -63,41 +63,48 @@ def _next_key() -> str:
 
 def parse_domain(domain: str):
     """
-    Returns (original, com_fallback, has_country_tld).
-    com_fallback is the base-.com version for country TLDs.
+    Returns (original, com_fallback, country_code).
+    country_code is the ISO-2 code detected from the TLD, or None.
     """
     domain = domain.lower().strip().removeprefix("www.")
 
     if domain.endswith(".co.uk"):
         base = domain[:-len(".co.uk")].split(".")[-1]
-        return domain, f"{base}.com", True
+        return domain, f"{base}.com", "gb"
 
     parts = domain.split(".")
     tld = parts[-1]
 
     if tld in TLD_COUNTRY:
-        base = parts[-2]          # e.g. "adidas" from "adidas.it"
-        return domain, f"{base}.com", True
+        country = TLD_COUNTRY[tld]
+        base = parts[-2]
+        return domain, f"{base}.com", country
 
     if tld == "com" and len(parts) > 2:
         # Subdomain like offer.alibaba.com → alibaba.com
-        return domain, ".".join(parts[-2:]), False
+        return domain, ".".join(parts[-2:]), None
 
-    return domain, domain, False
+    return domain, domain, None
 
 
 # ── Surfe search ─────────────────────────────────────────────────────────────
 
-def surfe_search(domain: str, limit: int = 10, retries: int = 3) -> list:
+def surfe_search(domain: str, country: str = None,
+                 limit: int = 10, retries: int = 3) -> list:
     """Call Surfe API and return list of people dicts. Thread-safe."""
+    people_filter: dict = {"jobTitles": JOB_TITLES}
+    if country:
+        people_filter["countries"] = [country]
+
     payload = {
         "limit": limit,
-        "people": {"jobTitles": JOB_TITLES},
+        "people": people_filter,
         "companies": {"domains": [domain]},
     }
     key = _next_key()
     with _lock:
         _call_counter[0] += 1
+        time.sleep(0.3)   # ~3 req/s per worker, well under 10/s limit
 
     for attempt in range(retries):
         try:
@@ -107,8 +114,9 @@ def surfe_search(domain: str, limit: int = 10, retries: int = 3) -> list:
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=20,
             )
-            if r.status_code == 429:
-                time.sleep(2 ** attempt)
+            if r.status_code in (429, 403):
+                wait = 5 * (attempt + 1)   # 5s, 10s, 15s
+                time.sleep(wait)
                 continue
             if r.status_code == 200:
                 return r.json().get("people", [])
@@ -126,41 +134,88 @@ def title_priority(job_title: str) -> int:
     return len(PRIORITY_KEYWORDS)
 
 
+import re as _re
+_EMOJI_RE = _re.compile(
+    "[\U0001F000-\U0001FFFF"
+    "\U00002702-\U000027B0"
+    "\U000024C2-\U0001F251"
+    "\U0001F900-\U0001F9FF"
+    "☀-⛿✀-➿]+",
+    flags=_re.UNICODE,
+)
+
+def _clean(name: str) -> str:
+    """Strip emojis, zero-width chars and stray punctuation from a name."""
+    if not name:
+        return ""
+    name = _EMOJI_RE.sub("", name)
+    # Remove zero-width joiners, variation selectors and other invisible chars
+    name = _re.sub(r"[​-‏  ️͏­]", "", name)
+    name = _re.sub(r"[✓✔☑✅»«|•·—–]", "", name)
+    return _re.sub(r"\s+", " ", name).strip()
+
+
+def _split_name(first: str, last: str):
+    """
+    Ensure first and last are populated.
+    Surfe sometimes puts emoji (or the whole name) in firstName and
+    leaves lastName empty, or vice-versa.
+    """
+    first = _clean(first)
+    last  = _clean(last)
+
+    # If firstName is empty after cleaning, promote from lastName
+    if not first and last:
+        parts = last.split()
+        first = parts[0]
+        last  = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+    # If lastName is empty and firstName has multiple tokens, split off last word
+    if first and not last and " " in first:
+        parts = first.split()
+        first = " ".join(parts[:-1])
+        last  = parts[-1]
+
+    return first, last
+
+
 def find_contacts(company: dict) -> dict:
     """
     Search Surfe for up to 2 contacts.
     Strategy:
-      1. Try original domain (any TLD).
-      2. If 0 results and domain has a country TLD (.it, .de, …):
-         retry with base.com — NO country filter, since affiliate teams
-         are often global even for country-specific Awin programs.
-    Only 1–2 API calls per company (efficient credit use).
+      1. Try original domain (no country filter) — local TLDs (.it, .de)
+         already scope the results geographically.
+      2. If 0 results and domain has a country TLD → retry with base.com
+         filtered by that same country code.
+         This keeps contacts relevant to the market without expanding
+         to unrelated global teams (e.g. Acer Taiwan for Acer IT).
+    Max 2 API calls per company.
     """
     domain = company["domain"]
-    original, com_fallback, has_country_tld = parse_domain(domain)
+    original, com_fallback, country = parse_domain(domain)
 
     people = surfe_search(original)
 
     used_fallback = False
-    if not people and has_country_tld and com_fallback != original:
-        people = surfe_search(com_fallback)
+    if not people and country and com_fallback != original:
+        people = surfe_search(com_fallback, country=country)
         used_fallback = True
 
     people.sort(key=lambda p: title_priority(p.get("jobTitle", "")))
 
     contacts = []
     for p in people[:2]:
-        # companyDomain from Surfe = the actual domain for RocketReach email lookup
+        fn, ln = _split_name(p.get("firstName", ""), p.get("lastName", ""))
         surfe_domain = p.get("companyDomain", "")
         rocketreach_domain = surfe_domain if surfe_domain else (
             com_fallback if used_fallback else original
         )
         contacts.append({
-            "first_name":        p.get("firstName", ""),
-            "last_name":         p.get("lastName", ""),
-            "linkedin":          p.get("linkedInUrl", ""),
-            "title":             p.get("jobTitle", ""),
-            "person_country":    p.get("country", ""),
+            "first_name":         fn,
+            "last_name":          ln,
+            "linkedin":           p.get("linkedInUrl", ""),
+            "title":              p.get("jobTitle", ""),
+            "person_country":     p.get("country", ""),
             "rocketreach_domain": rocketreach_domain,
         })
 
@@ -318,7 +373,7 @@ def run_batch(start: int = 0, limit: int = 300,
                       f"— {_call_counter[0] - calls_start} calls so far")
         return result
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:   # 2 worker = max ~4 req/s, safe sotto quota
         futures = {ex.submit(_process, c): c for c in companies}
         for future in as_completed(futures):
             r = future.result()
