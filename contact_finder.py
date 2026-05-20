@@ -14,10 +14,9 @@ import threading
 
 # ── API keys (round-robin) ───────────────────────────────────────────────────
 API_KEYS = [
-    # Keys 1-3 restored at midnight when daily quota resets
-    # "TL1fKLZMEE7rdWEKaIe_W-vmUvxkyP0fecMTLsbFJKA",
-    # "rMY_QurAxUvl6jDeeM9xN01q5IMFBfrH5AUJJLdafe4",
-    # "KwGtwE1QeCfHU1G3NjkMyGFqf2PT36NEC5taWt0iFgY",
+    "TL1fKLZMEE7rdWEKaIe_W-vmUvxkyP0fecMTLsbFJKA",  # reset stanotte
+    # "rMY_QurAxUvl6jDeeM9xN01q5IMFBfrH5AUJJLdafe4",  # ancora esaurita
+    # "KwGtwE1QeCfHU1G3NjkMyGFqf2PT36NEC5taWt0iFgY",  # ancora esaurita
     "xjs0s_35PkhFgU8L4Z1SU-m_urZsZd55nqFX8xp2noA",
     "FtZWylT6Cfe2S3f9UbV528opGBjsJ0fSYEHMzajXebE",
 ]
@@ -356,10 +355,11 @@ def update_excel(xlsx_path: str, results: list, output_path: str):
 
 # ── Batch runner ─────────────────────────────────────────────────────────────
 
-def run_batch(start: int = 0, limit: int = 300,
-              output_suffix: str = "batch1"):
-    """Process a slice of companies and write results to Excel."""
-    xlsx = "/home/user/AwinContacts/Awin_Contacts.xlsx"
+def run_batch(start: int = 0, limit: int = None,
+              output_suffix: str = "batch1",
+              input_file: str = None):
+    """Process companies without contacts and write results to Excel."""
+    xlsx = input_file or "/home/user/AwinContacts/Awin_Contacts.xlsx"
     out  = f"/home/user/AwinContacts/Awin_Contacts_{output_suffix}.xlsx"
 
     print(f"Loading companies (offset={start}, limit={limit})…", flush=True)
@@ -416,4 +416,7 @@ def run_batch(start: int = 0, limit: int = 300,
 
 
 if __name__ == "__main__":
-    run_batch(start=300, limit=460, output_suffix="batch2")
+    run_batch(
+        output_suffix="batch3",
+        input_file="/home/user/AwinContacts/Awin_Contacts_complete.xlsx",
+    )
