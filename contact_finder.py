@@ -23,15 +23,19 @@ API_KEYS = [
 SURFE_URL = "https://api.surfe.com/v2/people/search"
 
 # ── Job title search terms (Surfe expands semantically) ─────────────────────
-JOB_TITLES = [
+JOB_TITLES_HIGH = [
     "Affiliate Marketing",
     "Digital Marketing",
     "Performance Marketing",
+]
+JOB_TITLES_LOW = [
     "Marketing Manager",
     "Chief Marketing Officer",
     "Marketing Specialist",
     "E-commerce Manager",
+    "E-commerce Director",
 ]
+JOB_TITLES = JOB_TITLES_HIGH + JOB_TITLES_LOW
 
 # Client-side priority ranking (lower index = higher priority)
 PRIORITY_KEYWORDS = [
@@ -102,9 +106,10 @@ def parse_domain(domain: str):
 # ── Surfe search ─────────────────────────────────────────────────────────────
 
 def surfe_search(domain: str, country: str = None,
-                 limit: int = 2, retries: int = 3) -> list:
+                 job_titles: list = None,
+                 limit: int = 5, retries: int = 3) -> list:
     """Call Surfe API and return list of people dicts. Thread-safe."""
-    people_filter: dict = {"jobTitles": JOB_TITLES}
+    people_filter: dict = {"jobTitles": job_titles if job_titles is not None else JOB_TITLES}
     if country:
         people_filter["countries"] = [country]
 
@@ -191,27 +196,46 @@ def _split_name(first: str, last: str):
     return first, last
 
 
+def _filter_by_country(people: list, country: str) -> list:
+    """Keep only contacts whose country matches (or is unknown)."""
+    return [
+        p for p in people
+        if not p.get("country") or p.get("country", "").lower() == country
+    ]
+
+
 def find_contacts(company: dict) -> dict:
     """
-    Search Surfe for up to 2 contacts.
-    Strategy:
-      1. Try original domain (no country filter) — local TLDs (.it, .de)
-         already scope the results geographically.
-      2. If 0 results and domain has a country TLD → retry with base.com
-         filtered by that same country code.
-         This keeps contacts relevant to the market without expanding
-         to unrelated global teams (e.g. Acer Taiwan for Acer IT).
-    Max 2 API calls per company.
+    Search Surfe for up to 2 contacts with country-aware priority.
+
+    Strategy (max 2 API calls per company):
+      1. Search original domain with limit=5, no country filter.
+         For country-TLD domains (.it, .de, .es …): post-filter results to
+         keep only contacts whose country matches (or is unknown).
+      2. If 0 matching contacts and domain has a country TLD with a .com
+         fallback → retry .com WITH explicit country filter.
+
+    For .com / no-country domains: no country restriction at all.
+    Client-side: sort by PRIORITY_KEYWORDS so affiliate > digital >
+    performance > CMO > manager > specialist > e-commerce.
     """
     domain = company["domain"]
     original, com_fallback, country = parse_domain(domain)
 
-    people = surfe_search(original)
+    # Step 1: original domain, no country filter, 5 candidates
+    people = surfe_search(original, limit=5)
+
+    # Post-filter by expected country for country-TLD domains
+    if country:
+        people = _filter_by_country(people, country)
 
     used_fallback = False
+
+    # Step 2: .com fallback with explicit country filter
     if not people and country and com_fallback != original:
-        people = surfe_search(com_fallback, country=country)
-        used_fallback = True
+        people = surfe_search(com_fallback, country=country, limit=5)
+        if people:
+            used_fallback = True
 
     people.sort(key=lambda p: title_priority(p.get("jobTitle", "")))
 
@@ -417,6 +441,6 @@ def run_batch(start: int = 0, limit: int = None,
 
 if __name__ == "__main__":
     run_batch(
-        output_suffix="batch3",
+        output_suffix="batch4",
         input_file="/home/user/AwinContacts/Awin_Contacts_complete.xlsx",
     )
