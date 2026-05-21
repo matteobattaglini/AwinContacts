@@ -204,39 +204,51 @@ def _filter_by_country(people: list, country: str) -> list:
     ]
 
 
+def _dedup(people: list) -> list:
+    """Remove duplicate contacts by LinkedIn URL (keeps first occurrence)."""
+    seen, out = set(), []
+    for p in people:
+        li = p.get("linkedInUrl", "")
+        key = li if li else id(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
 def find_contacts(company: dict) -> dict:
     """
     Search Surfe for up to 2 contacts with country-aware priority.
 
-    Strategy (max 2 API calls per company):
-      1. Search original domain with limit=5, no country filter.
-         For country-TLD domains (.it, .de, .es …): post-filter results to
-         keep only contacts whose country matches (or is unknown).
-      2. If 0 matching contacts and domain has a country TLD with a .com
-         fallback → retry .com WITH explicit country filter.
+    Strategy: always check BOTH the original domain and the .com fallback
+    (when a country TLD is detected), then merge and deduplicate results.
 
-    For .com / no-country domains: no country restriction at all.
-    Client-side: sort by PRIORITY_KEYWORDS so affiliate > digital >
-    performance > CMO > manager > specialist > e-commerce.
+      1. Search original domain, post-filter by country for country-TLD domains.
+      2. Also search .com WITH explicit country filter (when applicable).
+      3. Merge + dedup by LinkedIn URL, sort by priority, take top 2.
+
+    For .com / no-country domains a single search is made (no fallback).
     """
     domain = company["domain"]
     original, com_fallback, country = parse_domain(domain)
 
-    # Step 1: original domain, no country filter, 5 candidates
+    # Step 1: original domain, 5 candidates, post-filter by country
     people = surfe_search(original, limit=5)
-
-    # Post-filter by expected country for country-TLD domains
     if country:
         people = _filter_by_country(people, country)
 
     used_fallback = False
 
-    # Step 2: .com fallback with explicit country filter
-    if not people and country and com_fallback != original:
-        people = surfe_search(com_fallback, country=country, limit=5)
-        if people:
+    # Step 2: always also search .com with country filter when applicable
+    if country and com_fallback != original:
+        more = surfe_search(com_fallback, country=country, limit=5)
+        if more:
             used_fallback = True
+            # Merge: append contacts not already in people (dedup after)
+            people = people + more
 
+    # Dedup (Surfe can return the same person twice across calls)
+    people = _dedup(people)
     people.sort(key=lambda p: title_priority(p.get("jobTitle", "")))
 
     contacts = []
@@ -441,6 +453,6 @@ def run_batch(start: int = 0, limit: int = None,
 
 if __name__ == "__main__":
     run_batch(
-        output_suffix="batch4",
+        output_suffix="batch5",
         input_file="/home/user/AwinContacts/Awin_Contacts_complete.xlsx",
     )
